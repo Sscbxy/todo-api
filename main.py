@@ -44,7 +44,8 @@ def create_todo(todo: TodoCreate, db: Session = Depends(get_db)):
 @app.get("/todos")
 def read_todos(done: Optional[bool] = None, db: Session = Depends(get_db)):
     # 1. 先建立一个基础查询：准备查 todos 表里的所有东西
-    query = db.query(models.TodoItem)
+    # 基础查询：只查没被软删除的
+    query = db.query(models.TodoItem).filter(models.TodoItem.is_deleted == False)
 
     # 2. 如果前端传了 done 参数（不是 None），就加上过滤条件
     if done is not None:
@@ -60,20 +61,23 @@ def delete_todo(item_id: int, db: Session = Depends(get_db)):
     
     # 1. 去数据库里找，有没有人叫这个名字（id == item_id）
     # .first() 意思是：把找到的第一个拿出来（因为没有重复的 id，所以第一个就是唯一一个）
-    todo = db.query(models.TodoItem).filter(models.TodoItem.id == item_id).first()
+    # 找数据的时候，不仅要 id 对得上，而且要“没被删过”
+    todo = db.query(models.TodoItem).filter(models.TodoItem.id == item_id, models.TodoItem.is_deleted == False ).first()
     
     # 2. 如果没找到（比如你传了个 999，但数据库里只有 1 和 2），就报个错
     if todo is None:
         return {"error": "找不到这个待办事项"}
     
     # 3. 如果找到了，就把它扔掉
-    db.delete(todo)
+     # 【核心变化】这里不再用 db.delete(todo)
+    # 而是把它标记为已删除
+    todo.is_deleted = True 
     
     # 4. 存档生效
     db.commit()
     
     # 5. 告诉前端：我删掉了
-    return {"message": f"成功删除了 id 为 {item_id} 的待办事项"}
+    return {"message": f"成功删除了 id 为 {item_id} 的待办事项（软删除）"}
 
 # 8.  “修改”接口
 @app.put("/todos/{item_id}")
@@ -96,4 +100,21 @@ def update_todo(item_id: int, todo: TodoCreate, db: Session = Depends(get_db)):
     # 5. 把修改后的结果返回给前端
     return db_todo
 
-# 9. "查询"
+# 10. "恢复"接口 (软删除的后悔药)
+@app.put("/todos/{item_id}/restore")
+def restore_todo(item_id: int, db: Session = Depends(get_db)):
+    # 1. 去找这个 id 的数据（注意：这里【不需要】过滤 is_deleted，因为我们要找的就是被删掉的！）
+    db_todo = db.query(models.TodoItem).filter(models.TodoItem.id == item_id).first()
+    
+    # 2. 如果连这个 id 都根本没有过，那就报错
+    if db_todo is None:
+        return {"error": "这个待办事项从来没有存在过"}
+    
+    # 3. 如果找到了，不管它现在是什么状态，直接强行把它标记为“未删除”
+    db_todo.is_deleted = False
+    
+    # 4. 提交保存
+    db.commit()
+    db.refresh(db_todo)
+    
+    return {"message": f"成功恢复了 id 为 {item_id} 的待办事项", "data": db_todo}
